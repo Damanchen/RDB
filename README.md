@@ -1,13 +1,18 @@
 ## RDB
 
 &emsp;&emsp;rdb是一个用于解析Redis的RDB文件的Go包。解析RDB格式参照[Redis RDB File Format](https://github.com/sripathikrishnan/redis-rdb-tools/blob/master/docs/RDB_File_Format.textile)   
-&emsp;&emsp;该包是在[cupcake/rdb](https://github.com/cupcake/rdb)基础上修改。增加对RDB Version 8的支持，以及bug的修复。
+&emsp;&emsp;该包是在[BrotherGao/RDB](https://github.com/BrotherGao/RDB)基础上修改。增加对RDB Version 9的支持，以及bug的修复。
 
-RDB Version 8改动部分：
+RDB Version 8 改动部分：
 *  Lua脚本可以持久化到RDB文件中，类型为RDB_OPCODE_AUX，以key-value的形式持久化。其中，key为"lua"，value为对应的脚本内容
 *  增加RDB_TYPE_ZSET_2类型，浮点类型不在以字符串的形式保存，而是以binary形式保存到RDB中去
 *  增加数据的长度增加RDB_64BITLEN类型
 *  增加RDB_TYPE_MODULE类型，Redis 4.0引入Module模块。(该包不支持对该部分的解析)
+
+RDB Version 9 改动部分：
+* RDB可以包含keys的LRU或LFU (已实现 lru/lfu 字段的解析)
+* 新建流数据类型Stream (暂时还未实现)
+* RDB可以包含模块AUX字段 (该包不准备支持对该部分的解析)
 
 ## 使用
 如下是示例程序部分代码
@@ -62,63 +67,78 @@ func (p *decoder) Zadd(key []byte, score float64, member []byte) {
 	p.i++
 }
 
+func (p *decoder) StartRDB() {
+	fmt.Println("Start parsing RDB")
+}
+
+func (p *decoder) EndRDB() {
+	fmt.Println("Finish parsing RDB")
+}
+
+func (p *decoder) GetKeys() int {
+	decodedKeys := p.i
+	return decodedKeys
+}
+
+func maybeFatal(err error) {
+	if err != nil {
+		fmt.Printf("Fatal error: %s\n", err)
+		os.Exit(1)
+	}
+}
+
 func main() {
 	f, err := os.Open(os.Args[1])
-	//处理err
+	maybeFatal(err)
 	err = rdb.Decode(f, &decoder{})
-	//处理err
+	maybeFatal(err)
 }
 ```
+
 运行结果如下：
 ```powershell
 Start parsing RDB
 aux_key="redis-ver"
-aux_value="4.0.10"
+aux_value="5.0.10"
 aux_key="redis-bits"
 aux_value="64"
 aux_key="ctime"
-aux_value="1545881958"
+aux_value="1610349359"
 aux_key="used-mem"
-aux_value="2081152"
+aux_value="1902424"
 aux_key="repl-stream-db"
 aux_value="0"
 aux_key="repl-id"
-aux_value="8d4eda6495c7cb8ae7c5ba0626abbcc79c56f9ca"
+aux_value="e31f63605ddde5b2cbf8459f46a464c5b0fbc333"
 aux_key="repl-offset"
-aux_value="0"
+aux_value="776"
 aux_key="aof-preamble"
 aux_value="0"
+db: [0]
 Start parsing DB0
-db=0 "klose" -> "11" ttl=0
+dbSize: [4], expiresSize: [2]
+lruIdle: [7574825]
+db=0 "cfq3" -> "cfq3" ttl=0
+lruIdle: [7574825]
+db=0 "cfq2" -> "cfq2" ttl=0
+rdbFlagExpiryMS: [1610435732823]
+lruIdle: [22]
+db=0 "cfq4" -> "cfq4" ttl=1610435732823
+rdbFlagExpiryMS: [1610435330609]
+lruIdle: [7573292]
+db=0 "cfq" -> "cfq" ttl=1610435330609
 Finish parsing DB0
-Start parsing DB1
-db=1 "klose"[0] -> {"b", score=1.123456789}
-db=1 "klose"[1] -> {"a", score=11.345}
-db=1 "klose"[2] -> {"c", score=123}
-Finish parsing DB1
-Start parsing DB2
-db=2 "klose" . "a" -> "1"
-db=2 "klose" . "b" -> "2"
-db=2 "klose" . "c" -> "3"
-Finish parsing DB2
-Start parsing DB11
-db=11 "klose" -> "123456" ttl=0
-db=11 "list"[0] -> "a"
-db=11 "list"[1] -> "b"
-db=11 "list"[2] -> "c"
-db=11 "list"[3] -> "d"
-db=11 "list"[4] -> "e"
-aux_key="lua"
-aux_value="return redis.call('get', KEYS[1])"
-aux_key="lua"
-aux_value="return redis.call('llen', KEYS[1])"
-Finish parsing DB11
 Finish parsing RDB
+rdbFlagEOF
+
 ```
-具体参见example目录下的test.go文件。fixture目录下为用于测试的各个版本的rdb文件
+具体参见example目录下的test.go文件。
+
+v8rdb 目录下为用于测试的 v8 版本的rdb文件；v9rdb 目录下为用于测试的 v8 版本的rdb文件
 
 ## 安装
 
 ```
-go get github.com/BrotherGao/RDB
+go get github.com/Damanchen/RDB
 ```
+

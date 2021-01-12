@@ -5,9 +5,9 @@ package main
 import (
 	"fmt"
 	"os"
-	"github.com/BrotherGao/RDB"
+	"github.com/Damanchen/RDB"
 
-	"github.com/BrotherGao/RDB/nopdecoder"
+	"github.com/Damanchen/RDB/nopdecoder"
 )
 
 type decoder struct {
@@ -66,6 +66,11 @@ func (p *decoder) StartRDB() {
 
 func (p *decoder) EndRDB() {
 	fmt.Println("Finish parsing RDB")
+}
+
+func (p *decoder) GetKeys() int {
+	decodedKeys := p.i
+	return decodedKeys
 }
 
 func maybeFatal(err error) {

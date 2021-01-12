@@ -8,7 +8,7 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/BrotherGao/RDB/crc64"
+	"github.com/Damanchen/RDB/crc64"
 )
 
 const Version = 6

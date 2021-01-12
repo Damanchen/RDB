@@ -10,7 +10,7 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/BrotherGao/RDB/crc64"
+	"github.com/Damanchen/RDB/crc64"
 )
 
 // A Decoder must be implemented to parse a RDB file.
@@ -59,6 +59,8 @@ type Decoder interface {
 	EndDatabase(n int)
 	// EndRDB is called when parsing of the RDB file is complete.
 	EndRDB()
+
+	GetKeys() int
 }
 
 // Decode parses a RDB file from r and calls the decode hooks on d.
@@ -80,7 +82,8 @@ func DecodeDump(dump []byte, db int, key []byte, expiry int64, d Decoder) error 
 	decoder.event.StartRDB()
 	decoder.event.StartDatabase(db)
 
-	err = decoder.readObject(key, ValueType(dump[0]), expiry)
+	//err = decoder.readObject(key, ValueType(dump[0]), expiry)
+	err = decoder.readObject(key, ValueType(dump[0]), expiry, 0, 0)
 
 	decoder.event.EndDatabase(db)
 	decoder.event.EndRDB()
@@ -125,6 +128,10 @@ const (
 	rdb64bitLen = 0x81
 	rdbEncVal   = 3
 
+	rdbFlagModuleAux = 0xf7
+	rdbFlagIdle      = 0xf8
+	rdbFlagFreq      = 0xf9
+
 	rdbFlagAux      = 0xfa
 	rdbFlagResizeDB = 0xfb
 	rdbFlagExpiryMS = 0xfc
@@ -159,13 +166,27 @@ func (d *decode) decode() error {
 
 	var db uint64
 	var expiry int64
+	var lruIdle uint64
+	var lfuFreq int
+
 	firstDB := true
 	for {
 		objType, err := d.r.ReadByte()
+
 		if err != nil {
 			return err
 		}
+
 		switch objType {
+	//rdbFlagModuleAux = 0xf7
+	//rdbFlagIdle      = 0xf8
+	//rdbFlagFreq      = 0xf9
+	//rdbFlagAux      = 0xfa
+	//rdbFlagResizeDB = 0xfb
+	//rdbFlagExpiryMS = 0xfc
+	//rdbFlagExpiry   = 0xfd
+	//rdbFlagSelectDB = 0xfe
+	//rdbFlagEOF      = 0xff
 		case rdbFlagAux:
 			auxKey, err := d.readString()
 			if err != nil {
@@ -175,6 +196,8 @@ func (d *decode) decode() error {
 			if err != nil {
 				return err
 			}
+			//fmt.Printf("%v auxKey: [%v], auxVal: [%v]\n", rdbFlagAux , auxKey, auxVal)
+
 			d.event.Aux(auxKey, auxVal)
 		case rdbFlagResizeDB:
 			dbSize, _, err := d.readLength()
@@ -185,19 +208,45 @@ func (d *decode) decode() error {
 			if err != nil {
 				return err
 			}
+			fmt.Printf("dbSize: [%v], expiresSize: [%v]\n", dbSize, expiresSize)
+
 			d.event.ResizeDatabase(dbSize, expiresSize)
 		case rdbFlagExpiryMS:
+			// intBuf []byte	byte = uint8
 			_, err := io.ReadFull(d.r, d.intBuf)
 			if err != nil {
 				return err
 			}
+			//fmt.Printf("rdbFlagExpiryMS d.intBuf: [%v]\n", d.intBuf)
+			//rdbFlagExpiryMS d.intBuf: [[121 225 143 219 118 1 0 0]]
+			//d.intBuf：8 bytes
 			expiry = int64(binary.LittleEndian.Uint64(d.intBuf))
+			fmt.Printf("rdbFlagExpiryMS: [%v]\n", expiry)
 		case rdbFlagExpiry:
 			_, err := io.ReadFull(d.r, d.intBuf[:4])
 			if err != nil {
 				return err
 			}
 			expiry = int64(binary.LittleEndian.Uint32(d.intBuf)) * 1000
+			fmt.Printf("rdbFlagExpiry: [%v]\n", expiry)
+
+		case rdbFlagIdle:
+			idle, _, err := d.readLength()
+			if err != nil {
+				fmt.Printf("rdbFlagIdle err: [%v]\n", err)
+				return err
+			}
+			lruIdle = uint64(idle)
+			fmt.Printf("lruIdle: [%v]\n", lruIdle)
+		case rdbFlagFreq:
+			b, err := d.r.ReadByte()
+			if err != nil {
+				//fmt.Printf("rdbFlagFreq err: [%v]\n", err)
+				return err
+			}
+			lfuFreq = int(b)
+			fmt.Printf("lfuFreq: [%v]\n", lfuFreq)
+
 		case rdbFlagSelectDB:
 			if !firstDB {
 				d.event.EndDatabase(int(db))
@@ -206,55 +255,87 @@ func (d *decode) decode() error {
 			if err != nil {
 				return err
 			}
+			fmt.Printf("db: [%v]\n", db)
+
 			d.event.StartDatabase(int(db))
 			firstDB = false
 		case rdbFlagEOF:
 			d.event.EndDatabase(int(db))
 			d.event.EndRDB()
+			fmt.Printf("rdbFlagEOF\n")
 			return nil
 		default:
 			key, err := d.readString()
 			if err != nil {
 				return err
 			}
-			err = d.readObject(key, ValueType(objType), expiry)
+			//err = d.readObject(key, ValueType(objType), expiry)
+			err = d.readObject(key, ValueType(objType), expiry, lruIdle, lfuFreq)
 			if err != nil {
+				fmt.Printf("readObject err: [%v]\n", err)
 				return err
 			}
 			expiry = 0
+			lruIdle = 0
+			lfuFreq = 0
+
+			//decodedKeys := d.event.GetKeys()
+			//fmt.Printf("decoded keys: [%v]\n\n", decodedKeys)
 		}
 	}
 
 	panic("not reached")
 }
 
-func (d *decode) readObject(key []byte, typ ValueType, expiry int64) error {
+//func (d *decode) readObject(key []byte, typ ValueType, expiry int64) error {
+func (d *decode) readObject(key []byte, typ ValueType, expiry int64, idle uint64, freq int) error {
+	//fmt.Printf("readObject key: [%v], typ: [%v], expiry: [%v]\n", key, typ, expiry)
 	switch typ {
+	//TypeString  ValueType = 0
+	//TypeList    ValueType = 1
+	//TypeSet     ValueType = 2
+	//TypeZSet    ValueType = 3
+	//TypeHash    ValueType = 4
+	//TypeZSet2   ValueType = 5
+	//TypeModule  ValueType = 6
+	//TypeModule2 ValueType = 7
+	//
+	//TypeHashZipmap    ValueType = 9
+	//TypeListZiplist   ValueType = 10
+	//TypeSetIntset     ValueType = 11
+	//TypeZSetZiplist   ValueType = 12
+	//TypeHashZiplist   ValueType = 13
+	//TypeListQuicklist ValueType = 14
 	case TypeString:
 		value, err := d.readString()
 		if err != nil {
 			return err
 		}
+		//fmt.Printf("readObject TypeString key: [%v] , value: [%v]\n", key, value)
 		d.event.Set(key, value, expiry)
 	case TypeList:
 		length, _, err := d.readLength()
 		if err != nil {
 			return err
 		}
+		//fmt.Printf("readObject TypeList StartList key: [%v], length: [%v], expire: [%v]\n", key, length, expiry)
 		d.event.StartList(key, int64(length), expiry)
 		for i := uint64(0); i < length; i++ {
 			value, err := d.readString()
 			if err != nil {
 				return err
 			}
+			//fmt.Printf("readObject TypeList Rpush key: [%v] , value: [%v]\n", key, value)
 			d.event.Rpush(key, value)
 		}
+		//fmt.Printf("readObject TypeList EndList key: [%v]\n", key)
 		d.event.EndList(key)
 	case TypeListQuicklist:
 		length, _, err := d.readLength()
 		if err != nil {
 			return err
 		}
+		//fmt.Printf("TypeListQuicklist , key: [%v] , length: [%v] , expiry: [%v]\n", key, length, expiry)
 		d.event.StartList(key, int64(-1), expiry)
 		for i := uint64(0); i < length; i++ {
 			d.readZiplist(key, 0, false)
@@ -431,6 +512,7 @@ func readZipmapItemLength(buf *sliceBuffer, readFree bool) (int, int, error) {
 }
 
 func (d *decode) readZiplist(key []byte, expiry int64, addListEvents bool) error {
+	//fmt.Printf("readZiplist key: [%v] , expire: [%v], addListEvents: [%v]\n", key, expiry, addListEvents)
 	ziplist, err := d.readString()
 	if err != nil {
 		return err
@@ -440,7 +522,9 @@ func (d *decode) readZiplist(key []byte, expiry int64, addListEvents bool) error
 	if err != nil {
 		return err
 	}
+	//fmt.Printf("readZiplist key: [%v] , length: [%v]\n", key, length)
 	if addListEvents {
+		//fmt.Printf("readZiplist  StartList  key: [%v] , length: [%v] , expiry: [%v]\n", key, length, expiry)
 		d.event.StartList(key, length, expiry)
 	}
 	for i := int64(0); i < length; i++ {
@@ -448,9 +532,11 @@ func (d *decode) readZiplist(key []byte, expiry int64, addListEvents bool) error
 		if err != nil {
 			return err
 		}
+		//fmt.Printf("readZiplist  Rpush  key: [%v] , entry: [%v]\n", key, entry)
 		d.event.Rpush(key, entry)
 	}
 	if addListEvents {
+		//fmt.Printf("readZiplist  EndList  key: [%v]\n", key)
 		d.event.EndList(key)
 	}
 	return nil
@@ -641,7 +727,7 @@ func (d *decode) checkHeader() error {
 	}
 
 	version, _ := strconv.ParseInt(string(header[5:]), 10, 64)
-	if version < 1 || version > 8 {
+	if version < 1 || version > 9 {
 		return fmt.Errorf("Can't handle RDB format version %d", version)
 	}
 
@@ -650,11 +736,16 @@ func (d *decode) checkHeader() error {
 
 func (d *decode) readString() ([]byte, error) {
 	length, encoded, err := d.readLength()
+	//fmt.Printf("readString length: [%v]  encoded: [%v]\n", length, encoded)
 	if err != nil {
 		return nil, err
 	}
 	if encoded {
 		switch length {
+		//rdbEncInt8  = 0
+		//rdbEncInt16 = 1
+		//rdbEncInt32 = 2
+		//rdbEncLZF   = 3
 		case rdbEncInt8:
 			i, err := d.readUint8()
 			return []byte(strconv.FormatInt(int64(int8(i)), 10)), err
@@ -778,11 +869,17 @@ func (d *decode) readBinaryFloat64() (float64, error) {
 
 func (d *decode) readLength() (uint64, bool, error) {
 	b, err := d.r.ReadByte()
+	//fmt.Printf("readLenth--readByte: [%v]\n", b)
 	if err != nil {
 		return 0, false, err
 	}
 	// The first two bits of the first byte are used to indicate the length encoding type
 	switch (b & 0xc0) >> 6 {
+	//  rdb6bitLen  = 0
+	//	rdb14bitLen = 1
+	//	rdb32bitLen = 0x80
+	//	rdb64bitLen = 0x81
+	//	rdbEncVal   = 3
 	case rdb6bitLen:
 		// When the first two bits are 00, the next 6 bits are the length.
 		return uint64(b & 0x3f), false, nil

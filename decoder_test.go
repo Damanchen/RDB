@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/BrotherGao/RDB"
+	"github.com/Damanchen/RDB"
 	. "gopkg.in/check.v1"
 )
 
@@ -192,7 +192,7 @@ func (s *DecoderSuite) TestDumpDecoder(c *C) {
 
 func decodeRDB(name string) *FakeRedis {
 	r := &FakeRedis{}
-	f, err := os.Open("fixtures/" + name + ".rdb")
+	f, err := os.Open("v8rdb/" + name + ".rdb")
 	if err != nil {
 		panic(err)
 	}
